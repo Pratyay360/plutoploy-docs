@@ -1,6 +1,7 @@
 [tools]
 mdbook = "latest"
 auto-doc = "latest"
+actionlint = "latest"
 
 [tasks.summary]
 description = "Regenerate src/SUMMARY.md from the files in src/"

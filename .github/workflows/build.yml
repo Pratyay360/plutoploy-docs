@@ -20,17 +20,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@main
+
       - name: Setup mdBook
         uses: peaceiris/actions-mdbook@main
         with:
           mdbook-version: "latest"
+
       - name: Generate SUMMARY.md
         run: ./scripts/gen-summary.sh
+
       - name: Build with mdBook
         run: mdbook build
+
       - name: Setup Pages
         uses: actions/configure-pages@main
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@main
         with:
           path: ./book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@main
