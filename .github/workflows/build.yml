@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@main
 
       - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@main
+        uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: "latest"
 
