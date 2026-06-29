@@ -1,4 +1,5 @@
 # Summary
 
-- [Chapter 1](./chapter_1.md)
-- [Chapter 2](./microservice.md)
+- [DNS Manager](./chapter_1.md)
+- [Plutoploy GitHub Bot — Manual](./ghbot.md)
+- [Container Agent — Manual](./microservice.md)

@@ -1,4 +1,3 @@
-# Chapter 2
 # Container Agent — Manual
 
 A small Go HTTP service that manages Docker / Podman containers over a REST API,
