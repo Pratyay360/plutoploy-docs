@@ -1,65 +1,47 @@
-# DNS Certificate Manager
+# dns-manager
 
-A Go-based ACME certificate manager that automates TLS certificate issuance using DNS-01 challenges via an authoritative DNS server.
+Automated ACME DNS-01 certificate issuance via CNAME delegation. Users configure a single CNAME record per domain; the service handles challenge serving and certificate issuance automatically.
 
-## Overview
+## Quick Start
 
-This service provides fully automated ACME DNS-01 certificate issuance by:
+```bash
+# Set required env vars
+export ACME_ACCOUNT_EMAIL="you@example.com"
+export ACME_DNS_ZONE="auth.example.com"
+export ACME_PUBLIC_IP="1.2.3.4"
 
-1. Running an authoritative DNS server that serves ACME challenge TXT records
-2. Exposing an HTTP API for certificate management operations
-3. Leveraging CNAME delegation so domains only need one-time DNS configuration
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    DNS Certificate Manager                   │
-├─────────────────────────────────────────────────────────────┤
-│  HTTP API (Gin)              │  Authoritative DNS Server    │
-│  ─────────────               │  ────────────────────────    │
-│  POST /acme/register         │  Serves TXT records for      │
-│  POST /acme/setup            │  _acme-challenge delegation  │
-│  POST /acme/issue            │  Answers SOA/NS/A queries    │
-│  GET  /acme/account          │  for the delegation zone     │
-├─────────────────────────────────────────────────────────────┤
-│              ACME Client (lego) + AutoDNSProvider           │
-└─────────────────────────────────────────────────────────────┘
+# Run
+go run .
 ```
 
-### How It Works
+## Configuration
 
-1. **One-time CNAME Setup**: Domain owner creates a CNAME record:
-   ```
-   _acme-challenge.example.com.  CNAME  example.com.auth.example.com.
-   ```
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `ACME_ACCOUNT_EMAIL` | — | Email for ACME account registration |
+| `ACME_DIRECTORY_URL` | Let's Encrypt production | ACME directory URL |
+| `ACME_DNS_ZONE` | — | Delegation zone (e.g. `auth.example.com`) |
+| `ACME_DNS_LISTEN` | `:53` | DNS server listen address |
+| `ACME_DNS_NS` | `ns1.<zone>` | Nameserver hostname |
+| `ACME_PUBLIC_IP` | — | A record for NS/zone apex |
+| `LISTEN_ADDR` | `:8080` | HTTP API listen address |
+| `DB_PATH` | `dns-manager.db` | SQLite database path |
 
-2. **Certificate Issuance**: When issuance is requested:
-   - ACME client requests a DNS-01 challenge
-   - `AutoDNSProvider` writes the TXT value to the authoritative DNS server's `TXTStore`
-   - CA queries the domain, follows the CNAME to your authoritative server
-   - Authoritative server responds with the TXT challenge value
-   - CA validates and issues the certificate
+## How It Works
 
-3. **No Further Changes**: Renewals use the same CNAME—no manual DNS updates needed.
+1. Your DNS hosts `auth.example.com` with NS pointing to this server
+2. User creates one CNAME: `_acme-challenge.example.com` → `example-com.auth.example.com`
+3. When the CA validates, it follows the CNAME to your authoritative DNS server
+4. The server serves the ACME challenge TXT record from its in-memory store
+5. Certificate is issued and persisted to SQLite
 
-## Environment Variables
+## API
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ACME_DIRECTORY_URL` | ACME directory URL (Let's Encrypt, ZeroSSL, etc.) | Let's Encrypt Production |
-| `ACME_ACCOUNT_EMAIL` | Email for ACME account registration | - |
-| `ACME_DNS_ZONE` | Delegation zone (e.g., `auth.example.com`) | - |
-| `ACME_DNS_LISTEN` | DNS server listen address | `:53` |
-| `ACME_DNS_NS` | Nameserver hostname (SOA/NS) | `ns1.<zone>` |
-| `ACME_PUBLIC_IP` | Public IP for A record (NS/zone apex) | - |
-| `LISTEN_ADDR` | HTTP server listen address | `:8080` |
-
-## API Endpoints
+All endpoints are under `/acme`.
 
 ### Health Check
 
-```http
+```
 GET /health
 ```
 
@@ -67,43 +49,51 @@ GET /health
 {"message": "ok"}
 ```
 
-### Register ACME Account
+### Register Account
 
-```http
+```
 POST /acme/register
-Content-Type: application/json
-
-{
-  "key_type": "EC256"  // Optional: EC256 (default) or RSA4096
-}
 ```
 
+Registers an ACME account with the CA. Only needed once per deployment (saved to DB).
+
+**Request (optional body):**
+```json
+{"key_type": "RSA4096"}
+```
+
+Key types: `EC256`, `RSA4096` (default).
+
+**Response:**
 ```json
 {
-  "email": "user@example.com",
-  "uri": "https://acme-v02.api.letsencrypt.org/acme/acct/...",
+  "email": "you@example.com",
+  "uri": "https://acme-v02.api.letsencrypt.org/acme/acct/12345678",
   "ca": "https://acme-v02.api.letsencrypt.org/directory"
 }
 ```
 
-### Get CNAME Setup Instructions
+### Link Domain
 
-```http
+```
 POST /acme/setup
-Content-Type: application/json
-
-{
-  "domain": "example.com"
-}
 ```
 
+Returns the CNAME record the user must configure.
+
+**Request:**
+```json
+{"domain": "example.com"}
+```
+
+**Response:**
 ```json
 {
   "domain": "example.com",
   "cname": {
     "name": "_acme-challenge.example.com",
     "type": "CNAME",
-    "value": "example.com.auth.example.com"
+    "value": "example-com.auth.example.com"
   },
   "instructions": "Create this CNAME record once..."
 }
@@ -111,120 +101,141 @@ Content-Type: application/json
 
 ### Issue Certificate
 
-```http
+```
 POST /acme/issue
-Content-Type: application/json
-
-{
-  "domain": "example.com"
-}
 ```
 
+Runs the DNS-01 flow. The domain must have its CNAME configured and resolvable.
+
+**Request:**
+```json
+{"domain": "example.com"}
+```
+
+**Response (success):**
 ```json
 {
   "domain": "example.com",
   "status": "valid",
-  "certificate": "...",
-  "private_key": "...",
+  "certificate": "-----BEGIN CERTIFICATE-----\n...",
+  "private_key": "-----BEGIN PRIVATE KEY-----\n...",
   "issuer_certificate": "...",
-  "cert_url": "..."
+  "cert_url": "https://acme-v02.api.letsencrypt.org/cert/..."
 }
 ```
 
-### Get Account Info
-
-```http
-GET /acme/account
-```
-
+**Response (failure):**
 ```json
 {
-  "email": "user@example.com",
-  "uri": "https://acme-v02.api.letsencrypt.org/acme/acct/...",
-  "ca": "https://acme-v02.api.letsencrypt.org/directory"
+  "domain": "example.com",
+  "status": "invalid",
+  "error": "acme: ..."
 }
 ```
 
-## Quick Start
-
-1. **Configure environment**:
-   ```bash
-   export ACME_ACCOUNT_EMAIL="your@email.com"
-   export ACME_DNS_ZONE="auth.example.com"
-   export ACME_PUBLIC_IP="203.0.113.10"
-   ```
-
-2. **Delegate DNS**: In your domain's DNS, add:
-   ```
-   _acme-challenge.yourdomain.com.  CNAME  yourdomain.com.auth.example.com.
-   ```
-
-3. **Run the service**:
-   ```bash
-   go run .
-   ```
-
-4. **Obtain certificate**:
-   ```bash
-   # Register account
-   curl -X POST http://localhost:8080/acme/register
-
-   # Get CNAME setup info
-   curl -X POST http://localhost:8080/acme/setup \
-     -d '{"domain": "yourdomain.com"}'
-
-   # Issue certificate (after CNAME is configured)
-   curl -X POST http://localhost:8080/acme/issue \
-     -d '{"domain": "yourdomain.com"}'
-   ```
-
-## Project Structure
+### List Domains
 
 ```
-.
-├── main.go                    # Entry point, HTTP server setup
-├── acme/
-│   ├── acme.go               # Core ACME logic (client, verifier, DNS provider)
-│   ├── dnsserver.go          # Authoritative DNS server + TXT store
-│   └── protocol.go           # HTTP handlers and route setup
-├── go.mod
-└── go.sum
+GET /acme/domains
 ```
 
-## Key Components
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "domain": "example.com",
+    "cname_target": "example-com.auth.example.com",
+    "created_at": "2026-07-01T12:00:00Z"
+  }
+]
+```
 
-### TXTStore (`acme/dnsserver.go`)
+### List Certificates
 
-Thread-safe in-memory store mapping FQDNs to TXT values. Populated by `AutoDNSProvider` during certificate issuance.
+```
+GET /acme/certs
+GET /acme/certs?domain=example.com
+```
 
-### DNSServer (`acme/dnsserver.go`)
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "domain": "example.com",
+    "certificate": "-----BEGIN CERTIFICATE-----\n...",
+    "private_key": "-----BEGIN PRIVATE KEY-----\n...",
+    "issuer_cert": "...",
+    "cert_url": "https://...",
+    "status": "valid",
+    "issued_at": "2026-07-01T12:05:00Z"
+  }
+]
+```
 
-Minimal authoritative DNS server handling:
-- **TXT**: Returns ACME challenge values for delegated names
-- **SOA**: Authority records for the delegation zone
-- **NS**: Nameserver records at zone apex
-- **A**: Public IP for NS/zone apex resolution
+## Setup Guide
 
-### AutoDNSProvider (`acme/acme.go`)
+### 1. Delegate DNS
 
-Implements lego's DNS challenge provider interface:
-- `Present()`: Writes challenge TXT value to the authoritative server
-- `CleanUp()`: Removes the TXT value after validation
-- `Timeout()`: 3-minute propagation window, 5-second polling
+Point your domain's `_acme-challenge` record to this service's delegation zone:
 
-### Verifier (`acme/acme.go`)
+```
+_acme-challenge.example.com.  CNAME  example-com.auth.example.com.
+```
 
-Orchestrates the ACME flow:
-- Account registration with the CA
-- DNS-01 challenge solving via `AutoDNSProvider`
-- Certificate issuance and retrieval
+This is a one-time setup per domain. No changes needed for renewals.
 
-## Dependencies
+### 2. Register and Issue
 
-- [gin](https://github.com/gin-gonic/gin) - HTTP framework
-- [lego](https://github.com/go-acme/lego) - ACME client library
-- [miekg/dns](https://github.com/miekg/dns) - DNS library
+```bash
+# Register account
+curl -X POST http://localhost:8080/acme/register \
+  -H "Content-Type: application/json" \
+  -d '{}'
 
-## License
+# Get CNAME instructions
+curl -X POST http://localhost:8080/acme/setup \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "example.com"}'
 
-See LICENSE file for details.
+# Issue certificate
+curl -X POST http://localhost:8080/acme/issue \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "example.com"}'
+```
+
+### 3. Verify
+
+```bash
+# Check saved account
+curl http://localhost:8080/acme/account
+
+# List linked domains
+curl http://localhost:8080/acme/domains
+
+# List issued certificates
+curl http://localhost:8080/acme/certs
+```
+
+## Database
+
+SQLite database stores:
+
+- **accounts** — ACME account credentials (email, URI, private key)
+- **domains** — Linked domains and their CNAME targets
+- **certificates** — Issued certificates, keys, and metadata
+
+The account private key is persisted so you don't need to re-register after a restart. Saved accounts are automatically loaded on startup.
+
+## Building
+
+```bash
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o dns-manager .
+```
+
+Cross-compile:
+
+```bash
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o dns-manager-linux-arm64 .
+```
